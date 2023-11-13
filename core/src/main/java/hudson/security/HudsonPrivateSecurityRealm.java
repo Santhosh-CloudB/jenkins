@@ -81,6 +81,7 @@ import jenkins.security.SecurityListener;
 import jenkins.security.seed.UserSeedProperty;
 import jenkins.util.SystemProperties;
 import net.sf.json.JSONObject;
+import org.bouncycastle.crypto.fips.FipsUnapprovedOperationError;
 import org.jenkinsci.Symbol;
 import org.kohsuke.accmod.Restricted;
 import org.kohsuke.accmod.restrictions.NoExternalUse;
@@ -345,8 +346,13 @@ public class HudsonPrivateSecurityRealm extends AbstractPasswordBasedSecurityRea
             String messages = getErrorMessages(si);
             throw new AccountCreationFailedException(messages);
         } else {
-            return createAccount(si);
+            try {
+                return createAccount(si);
+            } catch(Exception e){
+                throw new AccountCreationFailedException(e.getMessage());
+            }
         }
+
     }
 
     private String getErrorMessages(SignupInfo si) {
@@ -443,7 +449,11 @@ public class HudsonPrivateSecurityRealm extends AbstractPasswordBasedSecurityRea
                 if (user.getProperty(Details.class) != null)
                     si.errors.put("username", Messages.HudsonPrivateSecurityRealm_CreateAccount_UserNameAlreadyTaken());
         }
-
+        /*if (FIPS140.useCompliantAlgorithms()) {
+            if (si.password1.length() < 14) {
+                si.errors.put("password1", Messages.HudsonPrivateSecurityRealm_CreateAccount_FIPS_PasswordLengthInvalid());
+            }
+        }*/
         if (si.password1 != null && !si.password1.equals(si.password2)) {
             si.errors.put("password1", Messages.HudsonPrivateSecurityRealm_CreateAccount_PasswordNotMatch());
         }
@@ -479,7 +489,7 @@ public class HudsonPrivateSecurityRealm extends AbstractPasswordBasedSecurityRea
      * @return a valid {@link User} object created from given signup info
      * @throws IllegalArgumentException if an invalid signup info is passed
      */
-    private User createAccount(SignupInfo si) throws IOException {
+    private User createAccount(SignupInfo si) throws IOException, AccountCreationFailedException {
         if (!si.errors.isEmpty()) {
             String messages = getErrorMessages(si);
             throw new IllegalArgumentException("invalid signup info passed to createAccount(si): " + messages);
@@ -978,11 +988,11 @@ public class HudsonPrivateSecurityRealm extends AbstractPasswordBasedSecurityRea
                 Pattern.compile("^\\$HMACSHA512\\:" + ITTERATIONS + "\\:[a-f0-9]{" + (SALT_LENGTH_BYTES * 2) + "}\\$[a-f0-9]{" + ((KEY_LENGTH_BITS / 8) * 2) + "}$");
 
         @Override
-        public String encode(CharSequence rawPassword) {
+        public String encode(CharSequence rawPassword) throws AccountCreationFailedException {
             try {
                 return generatePasswordHashWithPBKDF2(rawPassword);
-            } catch (NoSuchAlgorithmException | InvalidKeySpecException e) {
-                throw new RuntimeException("Unable to generate password with PBKDF2WithHmacSHA512", e);
+            } catch (NoSuchAlgorithmException | InvalidKeySpecException | FipsUnapprovedOperationError e) {
+                throw new AccountCreationFailedException(e.getMessage());
             }
         }
 
@@ -1002,10 +1012,15 @@ public class HudsonPrivateSecurityRealm extends AbstractPasswordBasedSecurityRea
             return "$HMACSHA512:" + ITTERATIONS + STRING_SEPARATION + Util.toHexString(salt) + "$" + Util.toHexString(hash);
         }
 
-        private static byte[] generateSecretKey(PBEKeySpec spec) throws NoSuchAlgorithmException, InvalidKeySpecException {
-            SecretKeyFactory secretKeyFactory = SecretKeyFactory.getInstance(PBKDF2_ALGORITHM);
-            return secretKeyFactory.generateSecret(spec).getEncoded();
-        }
+            private static byte[] generateSecretKey(PBEKeySpec spec) throws NoSuchAlgorithmException, InvalidKeySpecException, FipsUnapprovedOperationError {
+                SecretKeyFactory secretKeyFactory = SecretKeyFactory.getInstance(PBKDF2_ALGORITHM);
+                return secretKeyFactory.generateSecret(spec).getEncoded();
+                /*try {
+                } catch (FipsUnapprovedOperationError er) {
+                    LOGGER.log(Level.SEVERE,"Fips error");
+                        throw new RuntimeException("Unable to generate password with PBKDF2WithHmacSHA512", er);
+                    }*/
+            }
 
         private SecureRandom secureRandom() {
             // lazy initialisation so that we do not block startup due to entropy
